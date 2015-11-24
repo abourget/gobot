@@ -2,7 +2,6 @@ package edison
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"strconv"
 
@@ -380,15 +379,13 @@ func (e *EdisonAdaptor) I2cStart(address int) (err error) {
 
 	if e.miniboard {
 		for _, i := range []string{"20", "19"} /* bus-1 */ {
-		//for _, i := range []string{"28", "27"} /* bus-6 */ {
+			//for _, i := range []string{"28", "27"} /* bus-6 */ {
 			if err = changePinMode(i, "1"); err != nil {
 				return
 			}
 		}
 
-		fmt.Println("MAMA23")
 		e.i2cDevice, err = sysfs.NewI2cDevice("/dev/i2c-1", address)
-		fmt.Println("MAMPA", err)
 
 	} else {
 
@@ -443,6 +440,12 @@ func (e *EdisonAdaptor) I2cStart(address int) (err error) {
 	}
 
 	return
+}
+
+// I2cReadBytesData uses I2C_RDWR to read bytes of data from a register.
+func (e *EdisonAdaptor) I2cReadBytesData(addr uint16, reg byte, b []byte) error {
+	i2cCtx := e.i2cDevice.(i2c.I2cReaderBytesData)
+	return i2cCtx.I2cReadBytesData(addr, reg, b)
 }
 
 // I2cWrite writes data to i2c device

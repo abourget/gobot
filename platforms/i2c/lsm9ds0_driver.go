@@ -124,11 +124,19 @@ type LSM9DS0Driver struct {
 
 	gyroScale  string
 	gyroScales map[string]lsm9ds0GyroScale
+
+	accelScale  string
+	accelScales map[string]lsm9ds0AccelScale
 }
 
 type lsm9ds0GyroScale struct {
 	sensitivity float64 // millidegrees/second/LSB - least significant bit
 	fs1fs0      uint8
+}
+
+type lsm9ds0AccelScale struct {
+	factor float64
+	afs  uint8
 }
 
 // NewLSM9DS0Driver creates a new driver with specified name and i2c interface, enabling
@@ -146,6 +154,14 @@ func NewLSM9DS0Driver(a I2c, name string, accel, gyro, magneto bool) *LSM9DS0Dri
 			"500":  {sensitivity: 17.50, fs1fs0: 0x01},
 			"2000": {sensitivity: 70, fs1fs0: 0x02},
 		},
+		accelScale: "2",
+		accelScales: map[string]lsm9ds0AccelScale{
+			"2":  {factor: 0.061, afs: 0},
+			"4":  {factor: 0.122, afs: 1},
+			"6":  {factor: 0.183, afs: 2},
+			"8":  {factor: 0.244, afs: 3},
+			"16": {factor: 0.732, afs: 4},
+		},
 	}
 }
 
@@ -154,17 +170,13 @@ func (l *LSM9DS0Driver) Connection() gobot.Connection { return l.connection.(gob
 
 // Start initialized the lsm9ds0
 func (l *LSM9DS0Driver) Start() (errs []error) {
-	fmt.Println("woah-01")
 	if l.gyroEnabled {
 		if err := l.connection.I2cStart(LSM9DS0_ADDRESS_G); err != nil {
-			fmt.Println("woah-02")
 			return []error{err}
 		}
 	}
 	if l.accelEnabled || l.magnetoEnabled {
-		fmt.Println("woah-03")
 		if err := l.connection.I2cStart(LSM9DS0_ADDRESS_XM); err != nil {
-			fmt.Println("woah-04", err)
 			return []error{err}
 		}
 	}
@@ -174,14 +186,12 @@ func (l *LSM9DS0Driver) Start() (errs []error) {
 		if err != nil {
 			errs = append(errs, err)
 		}
-		fmt.Println("woah-05", err)
 	}
 	if l.accelEnabled {
 		err := l.initAccelerator()
 		if err != nil {
 			errs = append(errs, err)
 		}
-		fmt.Println("woah-06", err)
 	}
 	if l.magnetoEnabled {
 		err := l.initMagnetometer()
@@ -189,7 +199,6 @@ func (l *LSM9DS0Driver) Start() (errs []error) {
 			errs = append(errs, err)
 		}
 	}
-	fmt.Println("woah-07", errs)
 
 	return
 }
@@ -205,91 +214,82 @@ type Vector struct {
 
 // GetGyro returns a vector, representing angular velocity in degrees/sec.
 func (l *LSM9DS0Driver) GetGyro() (av Vector, err error) {
-	/* upm_lsm9ds0.cxx:
-
-	  uint8_t buffer[6];
-
-	  memset(buffer, 0, 6);
-	  readRegs(DEV_GYRO, REG_OUT_X_L_G, buffer, 6);
-
-	  int16_t x, y, z;
-
-	  x =  ( (buffer[1] << 8) | buffer[0] );
-	  y =  ( (buffer[3] << 8) | buffer[2] );
-	  z =  ( (buffer[5] << 8) | buffer[4] );
-
-	  m_gyroX = float(x);
-	  m_gyroY = float(y);
-	  m_gyroZ = float(z);
-
-
-	  return
-
-	void LSM9DS0::readRegs(DEVICE_T dev, uint8_t reg, uint8_t *buffer, int len)
-	{
-	  mraa::I2c *device;
-
-	  switch(dev)
-	    {
-	    case DEV_GYRO: device = &m_i2cG; break;
-	    case DEV_XM:   device = &m_i2cXM; break;
-	    default:
-	      throw std::logic_error(string(__FUNCTION__) +
-	                             ": Internal error, invalid device specified");
-	      return;
-	    }
-
-	  // We need to set the high bit of the register to enable
-	  // auto-increment mode for reading multiple registers in one go.
-	  device->readBytesReg(reg | m_autoIncrementMode, buffer, len);
-	}
-
-	*/
 	if !l.gyroEnabled {
 		return av, fmt.Errorf("not enabled")
 	}
 
-	if err = l.connection.I2cWrite(LSM9DS0_ADDRESS_G, []byte{LSM9DS0_OUT_X_L_G}); err != nil {
-		return av, fmt.Errorf("I2cWrite error: %s", err)
+	i2cCtx := l.connection.(I2cReaderBytesData)
+	data := make([]byte, 6)
+	if err = i2cCtx.I2cReadBytesData(LSM9DS0_ADDRESS_G, byte(LSM9DS0_OUT_X_L_G)|0x80, data); err != nil {
+		return av, fmt.Errorf("I2cReadBytesData error: %s", err)
 	}
-	data, err := l.connection.I2cRead(LSM9DS0_ADDRESS_G, 6)
-	if err != nil {
-		return av, fmt.Errorf("I2cRead error: %s", err)
-	}
+	// if err = l.connection.I2cWrite(LSM9DS0_ADDRESS_G, []byte{LSM9DS0_OUT_X_L_G}); err != nil {
+	// }
+	// data, err := l.connection.I2cRead(LSM9DS0_ADDRESS_G, 6)
+	// if err != nil {
+	// 	return av, fmt.Errorf("I2cRead error: %s", err)
+	// }
 
 	buf := bytes.NewBuffer(data)
 	load := struct {
-		X, Y, Z *int16
-	}{
-		new(int16), new(int16), new(int16),
-	}
+		X, Y, Z int16
+	}{}
 	err = binary.Read(buf, binary.LittleEndian, &load)
-	fmt.Printf("loaded int16: %#v binary=%x\n", load, data)
+	//fmt.Printf("loaded int16: %#v binary=%x\n", load, data)
 
 	scale := l.gyroScales[l.gyroScale].sensitivity // millisecond/second/LSB
-	av.X = float64(*load.X) * scale / 1000.0
-	av.Y = float64(*load.Y) * scale / 1000.0
-	av.Z = float64(*load.Z) * scale / 1000.0
+	av.X = float64(load.X) * scale / 1000.0
+	av.Y = float64(load.Y) * scale / 1000.0
+	av.Z = float64(load.Z) * scale / 1000.0
 
 	return
 }
 
-func (l *LSM9DS0Driver) GetAccel() (p Vector, err error) {
+func (l *LSM9DS0Driver) GetAccel() (v Vector, err error) {
 	if !l.accelEnabled {
-		return p, fmt.Errorf("not enabled")
+		return v, fmt.Errorf("not enabled")
 	}
 
-	if err = l.connection.I2cWrite(LSM9DS0_ADDRESS_XM, []byte{LSM9DS0_OUT_X_L_A}); err != nil {
-		return p, fmt.Errorf("I2cWrite error: %s", err)
+	i2cCtx := l.connection.(I2cReaderBytesData)
+	data := make([]byte, 6)
+	if err = i2cCtx.I2cReadBytesData(LSM9DS0_ADDRESS_XM, byte(LSM9DS0_OUT_X_L_A)|0x80, data); err != nil {
+		return v, fmt.Errorf("I2cReadBytesData error: %s", err)
 	}
-	data, err := l.connection.I2cRead(LSM9DS0_ADDRESS_G, 6)
-	if err != nil {
-		return p, fmt.Errorf("I2cRead error: %s", err)
-	}
+
+	// if err = l.connection.I2cWrite(LSM9DS0_ADDRESS_XM, []byte{LSM9DS0_OUT_X_L_A}); err != nil {
+	// 	return p, fmt.Errorf("I2cWrite error: %s", err)
+	// }
+	// data, err := l.connection.I2cRead(LSM9DS0_ADDRESS_G, 6)
+	// if err != nil {
+	// 	return p, fmt.Errorf("I2cRead error: %s", err)
+	// }
 
 	buf := bytes.NewBuffer(data)
-	err = binary.Read(buf, binary.LittleEndian, &p)
+	load := struct {
+		X, Y, Z int16
+	}{}
+	err = binary.Read(buf, binary.LittleEndian, &load)
 
+	scale := 1.0
+	v.X = float64(load.X) * scale / 1000.0
+	v.Y = float64(load.Y) * scale / 1000.0
+	v.Z = float64(load.Z) * scale / 1000.0
+
+	return
+}
+
+// SetAccelScale sets the sensitivity. Allows values: 245, 500 and 2000 dps
+func (l *LSM9DS0Driver) SetAccelScale(scale string) error {
+	if _, ok := l.accelScales[scale]; !ok {
+		return errors.New("invalid value, use 2, 4, 6, 8 or 16")
+	}
+	l.accelScale = scale
+	return l.setAccelScale()
+}
+
+func (l *LSM9DS0Driver) setAccelScale() (err error) {
+	afs := l.accelScales[l.accelScale].afs
+	err = l.connection.I2cWrite(LSM9DS0_ADDRESS_XM, []byte{LSM9DS0_CTRL_REG2_XM, afs << 3})
 	return
 }
 
@@ -304,8 +304,7 @@ func (l *LSM9DS0Driver) initAccelerator() (err error) {
 		return
 	}
 
-	// Set scale to 2g
-	if err = l.connection.I2cWrite(LSM9DS0_ADDRESS_XM, []byte{LSM9DS0_CTRL_REG2_XM, 0x00}); err != nil {
+	if err = l.setAccelScale(); err != nil {
 		return
 	}
 

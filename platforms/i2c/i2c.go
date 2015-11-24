@@ -20,6 +20,10 @@ const (
 	Z        = "z"
 )
 
+type I2cReaderBytesData interface {
+	I2cReadBytesData(addr uint16, reg byte, data []byte) error
+}
+
 type I2cStarter interface {
 	I2cStart(address int) (err error)
 }
