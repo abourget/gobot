@@ -75,7 +75,7 @@ func (d *digitalPin) Export() error {
 	if _, err := writeFile(GPIOPATH+"/export", []byte(d.pin)); err != nil {
 		// If EBUSY then the pin has already been exported
 		if err.(*os.PathError).Err != syscall.EBUSY {
-			return err
+			return fmt.Errorf("exporting pin %s: %s", d.pin, err)
 		}
 	}
 	return nil
